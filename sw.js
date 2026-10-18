@@ -1,7 +1,7 @@
 // Service worker: app disponibile offline.
 // Network-first: online scarica sempre l'ultima versione, offline usa la cache.
-// Se cambi la lista dei file, aumenta CACHE (es. 'ht-v5').
-const CACHE = 'ht-v5';
+// Se cambi la lista dei file, aumenta CACHE (es. 'ht-v6').
+const CACHE = 'ht-v6';
 const ASSETS = [
   './', './index.html', './style.css', './app.js', './db.js', './manifest.json',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',

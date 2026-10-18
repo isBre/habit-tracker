@@ -679,10 +679,9 @@ function trendSVG(data) {
 }
 
 function statsSelectorHTML(habits, sel) {
-  return `<div class="selector">
-    <button class="chip ${sel === 'all' ? 'sel' : ''}" data-sel="all">📊 Panoramica</button>
-    ${habits.map(h => `<button class="chip ${sel === h.id ? 'sel' : ''}" data-sel="${esc(h.id)}">${esc(h.icon)} ${esc(h.name)}</button>`).join('')}
-  </div>`;
+  const tile = (id, icon, label) => `<button class="tile ${sel === id ? 'sel' : ''}" data-sel="${esc(id)}" aria-pressed="${sel === id}">
+    <span class="t-ico">${icon}</span><span class="t-lbl">${label}</span></button>`;
+  return `<div class="selector">${tile('all', '📊', 'Panoramica')}${habits.map(h => tile(h.id, esc(h.icon), esc(h.name))).join('')}</div>`;
 }
 
 function renderStats() {
@@ -740,7 +739,7 @@ function renderStats() {
   el.innerHTML = statsSelectorHTML(habits, sel) + body;
   const selEl = $('.selector', el);
   selEl.scrollLeft = scrollX;
-  $('.chip.sel', selEl)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  $('.tile.sel', selEl)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderSettings() {
