@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Abitudini">
+  <meta name="theme-color" content="#0f1413">
+  <title>Habit Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top"><h1 id="title">Stasera</h1></header>
+
+  <main>
+    <!-- CHECK-IN -->
+    <section id="view-checkin" class="view active">
+      <div class="datebar">
+        <button class="nav-btn" id="day-prev" aria-label="Giorno precedente">‹</button>
+        <div class="datebar-mid"><b id="day-label"></b><span id="day-sub" class="muted small"></span></div>
+        <button class="nav-btn" id="day-next" aria-label="Giorno successivo">›</button>
+      </div>
+      <div class="weekstrip" id="weekstrip"></div>
+      <div class="card score-card" id="score-card"></div>
+      <div id="habit-list" class="habit-list"></div>
+      <div class="card">
+        <h2>Com'è andata la giornata?</h2>
+        <div class="moods" id="moods"></div>
+        <label class="note-lbl">Nota<textarea id="day-note" rows="2" placeholder="Cosa ha aiutato, cosa ti ha frenato…"></textarea></label>
+      </div>
+      <p class="muted small center" id="save-status"></p>
+    </section>
+
+    <!-- PROGRESSI -->
+    <section id="view-stats" class="view"><div id="stats"></div></section>
+
+    <!-- IMPOSTAZIONI -->
+    <section id="view-settings" class="view">
+      <div class="card">
+        <h2>Abitudini</h2>
+        <div id="habit-admin"></div>
+        <button class="btn primary" type="button" id="btn-add-habit">+ Nuova abitudine</button>
+      </div>
+
+      <div class="card">
+        <h2>Promemoria</h2>
+        <p class="muted small">Badge rosso sull'icona dalle 20:00 finché non fai il check-in (si aggiorna quando apri l'app). Funziona solo con l'app installata sulla Home.</p>
+        <button class="btn" type="button" id="btn-badge">Attiva badge sull'icona</button>
+        <p class="muted small" style="margin-top:12px">Per una notifica serale fissa usa l'app <b>Comandi</b> di iOS: <i>Automazione → Nuova → Ora del giorno</i> (es. 22:00, ogni giorno, esegui subito) → azione <i>Apri URL</i> con l'indirizzo di questa app.</p>
+      </div>
+
+      <div class="card">
+        <h2>Dati</h2>
+        <p class="muted" id="backup-info"></p>
+        <div class="row wrap">
+          <button class="btn primary" type="button" id="btn-export">Esporta backup</button>
+          <label class="btn" for="import-file">Importa backup</label>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+        <button class="btn danger ghost" type="button" id="btn-wipe">Cancella tutti i dati</button>
+      </div>
+      <p class="muted center small" id="version"></p>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-view="checkin" class="active"><span class="ico">✓</span>Stasera</button>
+    <button data-view="stats"><span class="ico">▤</span>Progressi</button>
+    <button data-view="settings"><span class="ico">⚙</span>Impostazioni</button>
+  </nav>
+
+  <!-- Dialog abitudine -->
+  <dialog id="habit-dialog">
+    <form id="habit-form">
+      <h2 id="habit-title">Nuova abitudine</h2>
+      <div class="row-icon">
+        <label class="icon-lbl">Icona<input name="icon" maxlength="4" required></label>
+        <label class="grow">Nome<input name="name" maxlength="40" required placeholder="es. Palestra"></label>
+      </div>
+      <fieldset><legend>Frequenza</legend>
+        <div class="seg">
+          <label><input type="radio" name="freq" value="daily" checked><span>Ogni giorno</span></label>
+          <label><input type="radio" name="freq" value="weekly"><span>Volte a settimana</span></label>
+        </div>
+      </fieldset>
+      <label id="target-wrap">Quante volte a settimana<input name="target" type="number" min="1" max="7" inputmode="numeric" value="3"></label>
+      <div class="actions">
+        <button type="button" class="btn danger ghost" id="h-delete">Elimina</button>
+        <button type="button" class="btn ghost" id="h-archive">Archivia</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="h-cancel">Annulla</button>
+        <button type="submit" class="btn primary">Salva</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
