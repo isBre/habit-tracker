@@ -1,6 +1,6 @@
 import { db } from './db.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const DAY = 86400000;
 const WD = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
 const WD_LONG = ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
@@ -268,7 +268,14 @@ function insights() {
 }
 
 // ---------- campi personalizzati ----------
-const FIELD_TYPES = { number: 'Numero', wdl: 'Esito V/P/S', text: 'Testo', bool: 'Sì / No' };
+const FIELD_TYPES = { number: 'Numero', wdl: 'Esito V/P/S', text: 'Testo', bool: 'Sì / No', tournament: 'Torneo' };
+
+// torneo: { on, result: 'w' | 'l' | null }. Un vecchio valore booleano vale "torneo senza esito".
+function tourOf(v) {
+  if (v === true) return { on: true, result: null };
+  if (v && typeof v === 'object') return { on: !!v.on, result: v.result === 'w' || v.result === 'l' ? v.result : null };
+  return { on: false, result: null };
+}
 const fieldsOf = h => h.fields || [];
 const fieldVal = (k, h, f) => state.days.get(k)?.data?.[h.id]?.[f.id];
 
@@ -290,6 +297,10 @@ function fieldsFormHTML(h, k) {
     else if (f.type === 'wdl') {
       const x = v || {};
       ctrl = `<span class="wdl">${[['w', 'V'], ['d', 'P'], ['l', 'S']].map(([p, l]) => `<span class="wdl-p"><small>${l}</small>${stepper(h.id, f.id, p, x[p])}</span>`).join('')}</span>`;
+    } else if (f.type === 'tournament') {
+      const t = tourOf(v);
+      ctrl = `<span class="tour"><button type="button" class="tog ${t.on ? 'on' : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-tour="toggle">${t.on ? 'Sì' : 'No'}</button>${t.on ? `
+        <span class="seg-mini">${[['w', 'Vinto'], ['l', 'Perso']].map(([r, l]) => `<button type="button" class="${t.result === r ? 'sel ' + r : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-tour="${r}">${l}</button>`).join('')}</span>` : ''}</span>`;
     } else if (f.type === 'bool') ctrl = `<button type="button" class="tog ${v ? 'on' : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-bool="1">${v ? 'Sì' : 'No'}</button>`;
     else {
       const dl = `dl-${esc(h.id)}-${esc(f.id)}`;
@@ -308,7 +319,9 @@ async function updateField(hid, fid, fn) {
   renderAll();
 }
 
-// statistiche dei campi: totali, medie, raggruppamenti per testo/sì-no e per mese
+// statistiche dei campi: totali, medie, grafici, raggruppamenti per testo/sì-no e per mese.
+// Se c'è un campo Torneo, una giornata di torneo conta come UNA partita nel record (vinto = V, perso = S);
+// le singole partite del torneo restano nelle statistiche "partite giocate" e nella sezione Tornei.
 function fieldStatsHTML(h) {
   const fields = fieldsOf(h);
   if (!fields.length) return '';
@@ -316,35 +329,44 @@ function fieldStatsHTML(h) {
     .map(e => ({ k: e.date, v: e.data?.[h.id] || {} }));
   if (!rows.length) return '';
   const wdl = fields.find(f => f.type === 'wdl');
+  const tourF = fields.find(f => f.type === 'tournament');
   const nums = fields.filter(f => f.type === 'number');
   const groups = fields.filter(f => f.type === 'text' || f.type === 'bool');
+  const isTour = r => !!tourF && tourOf(r.v[tourF.id]).on;
 
   const agg = list => {
-    const a = { n: list.length, w: 0, d: 0, l: 0, sums: {} };
+    const a = { n: list.length, w: 0, d: 0, l: 0, played: 0, unk: 0, sums: {} };
     nums.forEach(f => { a.sums[f.id] = 0; });
     for (const r of list) {
-      if (wdl) { const x = r.v[wdl.id] || {}; a.w += +x.w || 0; a.d += +x.d || 0; a.l += +x.l || 0; }
+      const x = wdl ? r.v[wdl.id] || {} : {};
+      const pw = +x.w || 0, pd = +x.d || 0, pl = +x.l || 0;
+      a.played += pw + pd + pl;
+      if (isTour(r)) {
+        const res = tourOf(r.v[tourF.id]).result;
+        if (res === 'w') a.w++; else if (res === 'l') a.l++; else a.unk++;
+      } else { a.w += pw; a.d += pd; a.l += pl; }
       nums.forEach(f => { a.sums[f.id] += +r.v[f.id] || 0; });
     }
     a.games = a.w + a.d + a.l;
     return a;
   };
   const all = agg(rows);
-  const per = all.games || all.n;
-  const perLbl = all.games ? 'a partita' : 'a sessione';
+  const hasRecord = !!(wdl || tourF);
+  const per = all.played || all.n;
+  const perLbl = all.played ? 'a partita' : 'a sessione';
   const winPct = a => a.games ? pct(a.w / a.games) : '–';
 
   const tiles = [
     kpi('Sessioni', all.n),
-    ...(wdl ? [kpi(all.games === 1 ? 'Partita' : 'Partite', all.games), kpi('Vittorie', winPct(all))] : []),
+    ...(wdl ? [kpi('Partite giocate', all.played)] : []),
+    ...(hasRecord ? [kpi('Vittorie', `${winPct(all)}<small class="sub">${all.w}V ${all.d}P ${all.l}S</small>`)] : []),
     ...nums.map(f => kpi(esc(f.label), `${all.sums[f.id]}<small class="sub">${fmt2(all.sums[f.id] / per)} ${perLbl}</small>`)),
   ];
 
-  const head = `<tr><th></th><th>Sess.</th>${wdl ? '<th>V-P-S</th><th>%V</th>' : ''}${nums.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr>`;
-  const line = (label, a) => `<tr><td>${label}</td><td>${a.n}</td>${wdl ? `<td>${a.w}-${a.d}-${a.l}</td><td>${winPct(a)}</td>` : ''}${nums.map(f => `<td>${a.sums[f.id]}</td>`).join('')}</tr>`;
+  const head = `<tr><th></th><th>Sess.</th>${hasRecord ? '<th>V-P-S</th><th>%V</th>' : ''}${nums.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr>`;
+  const line = (label, a) => `<tr><td>${label}</td><td>${a.n}</td>${hasRecord ? `<td>${a.w}-${a.d}-${a.l}</td><td>${winPct(a)}</td>` : ''}${nums.map(f => `<td>${a.sums[f.id]}</td>`).join('')}</tr>`;
   const table = (title, map) => `<h3>${title}</h3><div class="tbl-wrap"><table class="tbl">${head}${[...map.entries()].map(([lab, list]) => line(lab, agg(list))).join('')}</table></div>`;
-
-  const groupTables = groups.map(g => {
+  const groupBy = g => {
     const m = new Map();
     for (const r of rows) {
       const raw = r.v[g.id];
@@ -352,22 +374,132 @@ function fieldStatsHTML(h) {
       if (!m.has(key)) m.set(key, []);
       m.get(key).push(r);
     }
-    const sorted = new Map([...m.entries()].sort((a, b) => b[1].length - a[1].length).map(([key, list]) => [esc(key), list]));
-    return table(`Per ${esc(g.label.toLowerCase())}`, sorted);
-  }).join('');
+    return new Map([...m.entries()].sort((a, b) => b[1].length - a[1].length));
+  };
+  const groupTables = groups.map(g => table(`Per ${esc(g.label.toLowerCase())}`,
+    new Map([...groupBy(g).entries()].map(([key, list]) => [esc(key), list])))).join('');
 
-  const months = new Map();
-  for (const r of rows) {
-    const mk = r.k.slice(0, 7);
-    if (!months.has(mk)) months.set(mk, []);
-    months.get(mk).push(r);
+  const monthKeys = [];
+  for (let mk = rows[0].k.slice(0, 7); mk <= rows.at(-1).k.slice(0, 7);) {
+    monthKeys.push(mk);
+    const d = keyToDate(mk + '-01'); d.setMonth(d.getMonth() + 1); mk = dayKey(d).slice(0, 7);
   }
-  const monthMap = new Map([...months.entries()].reverse().map(([mk, list]) =>
-    [keyToDate(mk + '-01').toLocaleDateString('it-IT', { month: 'short', year: '2-digit' }), list]));
+  const byMonth = new Map(monthKeys.map(mk => [mk, rows.filter(r => r.k.startsWith(mk))]));
+  const monthLbl = (mk, opts) => keyToDate(mk + '-01').toLocaleDateString('it-IT', opts);
+  const monthTable = table('Per mese', new Map([...byMonth.entries()].filter(([, l]) => l.length).reverse()
+    .map(([mk, l]) => [monthLbl(mk, { month: 'short', year: '2-digit' }), l])));
+
+  // ---- grafici ----
+  const charts = [];
+  if (hasRecord) {
+    const ms = monthKeys.slice(-12).map(mk => ({ mk, a: agg(byMonth.get(mk)) }));
+    charts.push(`<h3>Risultati per mese</h3>${resultsChartSVG(ms, monthLbl)}
+      <div class="legend"><span><i class="sw win"></i>Vittorie</span><span><i class="sw draw"></i>Pareggi</span><span><i class="sw loss"></i>Sconfitte</span></div>`);
+  }
+  const cumFields = nums.slice(0, 2).filter(f => all.sums[f.id] > 0);
+  if (cumFields.length && rows.length >= 3) {
+    charts.push(`<h3>${cumFields.map(f => esc(f.label)).join(' e ')} nel tempo (cumulati)</h3>${cumulativeSVG(rows, cumFields)}
+      <div class="legend">${cumFields.map((f, i) => `<span><i class="sw s${i + 1}"></i>${esc(f.label)}</span>`).join('')}</div>`);
+  }
+  const textF = groups.find(g => g.type === 'text');
+  if (hasRecord && textF) {
+    const bars = [...groupBy(textF).entries()].map(([key, list]) => ({ key, a: agg(list) }))
+      .filter(x => x.a.games >= 2).sort((a, b) => b.a.w / b.a.games - a.a.w / a.a.games);
+    if (bars.length >= 2) charts.push(`<h3>% vittorie per ${esc(textF.label.toLowerCase())}</h3>
+      <div class="hbars">${bars.map(x => `<button class="hbar" data-tip="${esc(x.key)}: ${x.a.w}V ${x.a.d}P ${x.a.l}S su ${x.a.games} (${x.a.n} sessioni)">
+        <span class="hb-l">${esc(x.key)}</span><span class="hb-t"><span class="hb-f" style="width:${x.a.w / x.a.games * 100}%"></span></span>
+        <span class="hb-v">${pct(x.a.w / x.a.games)}<small> · ${x.a.games}</small></span></button>`).join('')}</div>`);
+  }
+  const chartsHTML = charts.length ? `<div class="charts">${charts.join('')}<p class="chart-tip muted small">Tocca una barra o un punto per i dettagli.</p></div>` : '';
+
+  // ---- tornei ----
+  let tourHTML = '';
+  const tours = rows.filter(isTour);
+  if (tours.length) {
+    const ta = agg(tours);
+    const inner = tours.reduce((a, r) => { const x = r.v[wdl?.id] || {}; a.w += +x.w || 0; a.d += +x.d || 0; a.l += +x.l || 0; return a; }, { w: 0, d: 0, l: 0 });
+    const lab = textF ? r => esc(r.v[textF.id] || '—') : () => '';
+    tourHTML = `<h3>Tornei</h3>
+      <p class="small"><b>${tours.length}</b> tornei · <b>${ta.w}</b> vinti · <b>${ta.l}</b> persi${ta.unk ? ` · <span class="warn-t">${ta.unk} senza esito</span>` : ''}${wdl ? ` · partite al loro interno ${inner.w}V ${inner.d}P ${inner.l}S` : ''}</p>
+      <div class="tbl-wrap"><table class="tbl"><tr><th>Data</th>${textF ? `<th>${esc(textF.label)}</th>` : ''}<th>Esito</th>${wdl ? '<th>Partite</th>' : ''}${nums.slice(0, 2).map(f => `<th>${esc(f.label)}</th>`).join('')}</tr>
+      ${[...tours].reverse().map(r => { const t = tourOf(r.v[tourF.id]); const x = r.v[wdl?.id] || {};
+        return `<tr><td>${keyToDate(r.k).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}</td>${textF ? `<td>${lab(r)}</td>` : ''}
+          <td>${t.result === 'w' ? '🏆 Vinto' : t.result === 'l' ? 'Perso' : '<span class="warn-t">?</span>'}</td>
+          ${wdl ? `<td>${+x.w || 0}-${+x.d || 0}-${+x.l || 0}</td>` : ''}${nums.slice(0, 2).map(f => `<td>${+r.v[f.id] || 0}</td>`).join('')}</tr>`; }).join('')}
+      </table></div>`;
+  }
 
   return `<div class="fstats"><div class="kpis inner">${tiles.join('')}</div>
-    ${wdl ? `<p class="muted small">Record: <b>${all.w}</b> vittorie · <b>${all.d}</b> pareggi · <b>${all.l}</b> sconfitte</p>` : ''}
-    ${groupTables}${table('Per mese', monthMap)}</div>`;
+    ${tourF ? `<p class="muted small">Nel record ogni torneo conta come una partita: vinto = V, perso = S.${all.unk ? ` ${all.unk} tornei senza esito non sono contati: aprili dal check-in di quel giorno e scegli Vinto o Perso.` : ''}</p>` : ''}
+    ${chartsHTML}${groupTables}${tourHTML}${monthTable}</div>`;
+}
+
+// barre impilate V/P/S per mese
+function resultsChartSVG(ms, monthLbl) {
+  const W = 340, H = 150, L = 24, B = 20, T = 8;
+  const max = Math.max(1, ...ms.map(m => m.a.games));
+  const step = (W - L) / ms.length, bw = Math.min(22, step * 0.62);
+  const y = v => T + (H - T - B) * (1 - v / max);
+  const ticks = [...new Set([0, Math.ceil(max / 2), max])];
+  let out = ticks.map(t => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="grid"/><text x="${L - 6}" y="${y(t) + 3}" class="ax" text-anchor="end">${t}</text>`).join('');
+  ms.forEach((m, i) => {
+    const x = L + step * i + (step - bw) / 2;
+    let base = 0;
+    const segs = [['w', 'win'], ['d', 'draw'], ['l', 'loss']].filter(([p]) => m.a[p] > 0);
+    segs.forEach(([p, cls], j) => {
+      const y1 = y(base + m.a[p]), y0 = y(base);
+      const top = j === segs.length - 1;
+      const hgt = Math.max(1, y0 - y1 - (j > 0 ? 2 : 0));
+      out += top
+        ? `<path d="${roundTop(x, y1, bw, hgt, 4)}" class="${cls}"/>`
+        : `<rect x="${x}" y="${y1}" width="${bw}" height="${hgt}" class="${cls}"/>`;
+      base += m.a[p];
+    });
+    const lbl = monthLbl(m.mk, { month: 'narrow' });
+    out += `<text x="${x + bw / 2}" y="${H - 6}" class="ax" text-anchor="middle">${lbl}</text>`;
+    out += `<rect x="${L + step * i}" y="${T}" width="${step}" height="${H - T - B}" class="hit" data-tip="${monthLbl(m.mk, { month: 'long', year: 'numeric' })}: ${m.a.w}V ${m.a.d}P ${m.a.l}S${m.a.n ? ` in ${m.a.n} sessioni` : ' (nessuna partita)'}"/>`;
+  });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Risultati per mese">${out}</svg>`;
+}
+
+function roundTop(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+
+// linee cumulative (max 2 serie) su asse temporale
+function cumulativeSVG(rows, fields) {
+  const W = 340, H = 160, L = 24, R = 44, B = 20, T = 10;
+  const t0 = keyToDate(rows[0].k).getTime(), t1 = Math.max(t0 + DAY, keyToDate(rows.at(-1).k).getTime());
+  const series = fields.map(f => { let c = 0; return rows.map(r => ({ k: r.k, t: keyToDate(r.k).getTime(), v: (c += +r.v[f.id] || 0) })); });
+  const max = Math.max(1, ...series.map(s => s.at(-1).v));
+  const x = t => L + (W - L - R) * (t - t0) / (t1 - t0);
+  const y = v => T + (H - T - B) * (1 - v / max);
+  const ticks = [...new Set([0, Math.round(max / 2), max])];
+  let out = ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" class="grid"/><text x="${L - 6}" y="${y(t) + 3}" class="ax" text-anchor="end">${t}</text>`).join('');
+  const d0 = keyToDate(rows[0].k), d1 = keyToDate(rows.at(-1).k);
+  const fmtD = d => d.toLocaleDateString('it-IT', { month: 'short', year: '2-digit' });
+  out += `<text x="${L}" y="${H - 6}" class="ax">${fmtD(d0)}</text><text x="${W - R}" y="${H - 6}" class="ax" text-anchor="end">${fmtD(d1)}</text>`;
+  const ends = [];
+  series.forEach((s, i) => {
+    const pts = [`${x(s[0].t)},${y(0)}`];
+    s.forEach((p, j) => { if (j) pts.push(`${x(p.t)},${y(s[j - 1].v)}`); pts.push(`${x(p.t)},${y(p.v)}`); });
+    out += `<polyline points="${pts.join(' ')}" class="ln s${i + 1}"/>`;
+    ends.push({ i, v: s.at(-1).v, yy: y(s.at(-1).v) });
+  });
+  // etichette finali senza sovrapposizioni
+  ends.sort((a, b) => a.yy - b.yy);
+  for (let j = 1; j < ends.length; j++) if (ends[j].yy - ends[j - 1].yy < 12) ends[j].yy = ends[j - 1].yy + 12;
+  ends.forEach(e => { out += `<text x="${W - R + 6}" y="${e.yy + 4}" class="end s${e.i + 1}t">${e.v} ${esc(fields[e.i].label.toLowerCase())}</text>`; });
+  // punti toccabili: uno per sessione con valori
+  rows.forEach((r, j) => {
+    const vals = fields.map((f, i) => ({ f, add: +r.v[f.id] || 0, tot: series[i][j].v }));
+    if (!vals.some(v => v.add)) return;
+    const tip = `${keyToDate(r.k).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' })}: ${vals.map(v => `+${v.add} ${esc(v.f.label.toLowerCase())} (tot. ${v.tot})`).join(', ')}`;
+    vals.forEach((v, i) => { if (v.add) out += `<circle cx="${x(series[i][j].t)}" cy="${y(v.tot)}" r="2.5" class="pt s${i + 1}"/>`; });
+    out += `<circle cx="${x(series[0][j].t)}" cy="${y(Math.max(...vals.map(v => v.tot)))}" r="9" class="hit" data-tip="${tip}"/>`;
+  });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Valori cumulati nel tempo">${out}</svg>`;
 }
 
 const fmt2 = x => (Math.round(x * 100) / 100).toFixed(2).replace('.', ',');
@@ -791,6 +923,16 @@ async function init() {
       });
       return;
     }
+    const tr = e.target.closest('[data-tour]');
+    if (tr) {
+      const act = tr.dataset.tour;
+      updateField(tr.dataset.hid, tr.dataset.fid, v => {
+        const t = tourOf(v);
+        if (act === 'toggle') return { on: !t.on, result: t.on ? null : t.result };
+        return { on: true, result: t.result === act ? null : act };
+      });
+      return;
+    }
     const tg = e.target.closest('[data-bool]');
     if (tg) { updateField(tg.dataset.hid, tg.dataset.fid, v => !v); return; }
     const b = e.target.closest('.habit');
@@ -819,6 +961,12 @@ async function init() {
     if (e.target.id === 'btn-confirm') { await saveDay(getOrCreateDay(state.current)); renderAll(); }
   });
   $('#stats').addEventListener('click', e => {
+    const tip = e.target.closest('[data-tip]');
+    if (tip) {
+      const box = tip.closest('.charts')?.querySelector('.chart-tip');
+      if (box) { box.textContent = tip.dataset.tip; box.classList.add('on'); }
+      return;
+    }
     const b = e.target.closest('[data-day]');
     if (b) { goToDay(b.dataset.day); switchView('checkin'); }
   });
