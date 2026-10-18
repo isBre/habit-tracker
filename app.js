@@ -270,10 +270,10 @@ function insights() {
 // ---------- campi personalizzati ----------
 const FIELD_TYPES = { number: 'Numero', wdl: 'Esito V/P/S', text: 'Testo', bool: 'Sì / No', tournament: 'Torneo' };
 
-// torneo: { on, result: 'w' | 'l' | null }. Un vecchio valore booleano vale "torneo senza esito".
+// torneo: { on, result: 'w' | 'd' | 'l' | null } (pareggio = almeno una vittoria ma torneo non vinto). Un vecchio valore booleano vale "torneo senza esito".
 function tourOf(v) {
   if (v === true) return { on: true, result: null };
-  if (v && typeof v === 'object') return { on: !!v.on, result: v.result === 'w' || v.result === 'l' ? v.result : null };
+  if (v && typeof v === 'object') return { on: !!v.on, result: ['w', 'd', 'l'].includes(v.result) ? v.result : null };
   return { on: false, result: null };
 }
 const fieldsOf = h => h.fields || [];
@@ -300,7 +300,7 @@ function fieldsFormHTML(h, k) {
     } else if (f.type === 'tournament') {
       const t = tourOf(v);
       ctrl = `<span class="tour"><button type="button" class="tog ${t.on ? 'on' : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-tour="toggle">${t.on ? 'Sì' : 'No'}</button>${t.on ? `
-        <span class="seg-mini">${[['w', 'Vinto'], ['l', 'Perso']].map(([r, l]) => `<button type="button" class="${t.result === r ? 'sel ' + r : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-tour="${r}">${l}</button>`).join('')}</span>` : ''}</span>`;
+        <span class="seg-mini">${[['w', 'Vinto'], ['d', 'Pari'], ['l', 'Perso']].map(([r, l]) => `<button type="button" class="${t.result === r ? 'sel ' + r : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-tour="${r}">${l}</button>`).join('')}</span>` : ''}</span>`;
     } else if (f.type === 'bool') ctrl = `<button type="button" class="tog ${v ? 'on' : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-bool="1">${v ? 'Sì' : 'No'}</button>`;
     else {
       const dl = `dl-${esc(h.id)}-${esc(f.id)}`;
@@ -343,7 +343,7 @@ function fieldStatsHTML(h) {
       a.played += pw + pd + pl;
       if (isTour(r)) {
         const res = tourOf(r.v[tourF.id]).result;
-        if (res === 'w') a.w++; else if (res === 'l') a.l++; else a.unk++;
+        if (res === 'w') a.w++; else if (res === 'd') a.d++; else if (res === 'l') a.l++; else a.unk++;
       } else { a.w += pw; a.d += pd; a.l += pl; }
       nums.forEach(f => { a.sums[f.id] += +r.v[f.id] || 0; });
     }
@@ -420,17 +420,17 @@ function fieldStatsHTML(h) {
     const inner = tours.reduce((a, r) => { const x = r.v[wdl?.id] || {}; a.w += +x.w || 0; a.d += +x.d || 0; a.l += +x.l || 0; return a; }, { w: 0, d: 0, l: 0 });
     const lab = textF ? r => esc(r.v[textF.id] || '—') : () => '';
     tourHTML = `<h3>Tornei</h3>
-      <p class="small"><b>${tours.length}</b> tornei · <b>${ta.w}</b> vinti · <b>${ta.l}</b> persi${ta.unk ? ` · <span class="warn-t">${ta.unk} senza esito</span>` : ''}${wdl ? ` · partite al loro interno ${inner.w}V ${inner.d}P ${inner.l}S` : ''}</p>
+      <p class="small"><b>${tours.length}</b> tornei · <b>${ta.w}</b> vinti · <b>${ta.d}</b> pari · <b>${ta.l}</b> persi${ta.unk ? ` · <span class="warn-t">${ta.unk} senza esito</span>` : ''}${wdl ? ` · partite al loro interno ${inner.w}V ${inner.d}P ${inner.l}S` : ''}</p>
       <div class="tbl-wrap"><table class="tbl"><tr><th>Data</th>${textF ? `<th>${esc(textF.label)}</th>` : ''}<th>Esito</th>${wdl ? '<th>Partite</th>' : ''}${nums.slice(0, 2).map(f => `<th>${esc(f.label)}</th>`).join('')}</tr>
       ${[...tours].reverse().map(r => { const t = tourOf(r.v[tourF.id]); const x = r.v[wdl?.id] || {};
         return `<tr><td>${keyToDate(r.k).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}</td>${textF ? `<td>${lab(r)}</td>` : ''}
-          <td>${t.result === 'w' ? '🏆 Vinto' : t.result === 'l' ? 'Perso' : '<span class="warn-t">?</span>'}</td>
+          <td>${t.result === 'w' ? '🏆 Vinto' : t.result === 'd' ? 'Pari' : t.result === 'l' ? 'Perso' : '<span class="warn-t">?</span>'}</td>
           ${wdl ? `<td>${+x.w || 0}-${+x.d || 0}-${+x.l || 0}</td>` : ''}${nums.slice(0, 2).map(f => `<td>${+r.v[f.id] || 0}</td>`).join('')}</tr>`; }).join('')}
       </table></div>`;
   }
 
   return `<div class="fstats"><div class="kpis inner">${tiles.join('')}</div>
-    ${tourF ? `<p class="muted small">Nel record ogni torneo conta come una partita: vinto = V, perso = S.${all.unk ? ` ${all.unk} tornei senza esito non sono contati: aprili dal check-in di quel giorno e scegli Vinto o Perso.` : ''}</p>` : ''}
+    ${tourF ? `<p class="muted small">Nel record ogni torneo conta come una partita: vinto = V, pari (almeno una vittoria ma non vinto) = P, perso = S.${all.unk ? ` ${all.unk} tornei senza esito non sono contati: aprili dal check-in di quel giorno e scegli l'esito.` : ''}</p>` : ''}
     ${chartsHTML}${groupTables}${tourHTML}${monthTable}</div>`;
 }
 

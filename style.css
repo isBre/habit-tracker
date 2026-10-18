@@ -270,6 +270,7 @@ dialog h2 { margin: 0 0 14px; font-size: 20px; }
 .seg-mini { display: inline-flex; background: var(--card2); border-radius: 10px; padding: 2px; }
 .seg-mini button { border: 0; background: none; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; color: var(--muted); }
 .seg-mini button.sel.w { background: var(--win); color: var(--accent-ink); }
+.seg-mini button.sel.d { background: var(--draw); color: #fff; }
 .seg-mini button.sel.l { background: var(--loss); color: #fff; }
 .warn-t { color: var(--warn); font-weight: 600; }
 
