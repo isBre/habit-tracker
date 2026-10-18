@@ -1,6 +1,6 @@
 import { db } from './db.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const DAY = 86400000;
 const WD = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
 const WD_LONG = ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
@@ -9,6 +9,7 @@ const TITLES = { checkin: 'Stasera', stats: 'Progressi', settings: 'Impostazioni
 
 const state = { habits: [], days: new Map(), lastExport: null, current: null };
 let editingHabitId = null;
+let editingFields = [];
 let noteTimer = null;
 
 // ---------- utils ----------
@@ -60,7 +61,8 @@ async function load() {
 
 const activeHabits = () => state.habits.filter(h => !h.archived).sort((a, b) => a.order - b.order);
 const isDone = (h, k) => !!state.days.get(k)?.done?.[h.id];
-const isLogged = k => state.days.has(k);
+// un giorno importato (partial) contiene dati ma non è un vero check-in serale: non penalizza le altre abitudini
+const isLogged = k => { const e = state.days.get(k); return !!e && !e.partial; };
 
 // inizio statistiche: la data di creazione, o il primo giorno in cui l'hai spuntata se precedente
 function habitStart(h) {
@@ -71,6 +73,7 @@ function habitStart(h) {
 
 async function saveDay(entry) {
   entry.savedAt = Date.now();
+  delete entry.partial; // toccato dall'app = check-in vero
   state.days.set(entry.date, entry);
   await db.put('days', entry);
 }
@@ -264,6 +267,111 @@ function insights() {
   return out;
 }
 
+// ---------- campi personalizzati ----------
+const FIELD_TYPES = { number: 'Numero', wdl: 'Esito V/P/S', text: 'Testo', bool: 'Sì / No' };
+const fieldsOf = h => h.fields || [];
+const fieldVal = (k, h, f) => state.days.get(k)?.data?.[h.id]?.[f.id];
+
+// valori di testo già usati (per l'autocompletamento)
+function pastValues(h, f) {
+  const set = new Set();
+  for (const e of state.days.values()) { const v = e.data?.[h.id]?.[f.id]; if (typeof v === 'string' && v.trim()) set.add(v.trim()); }
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+const stepper = (hid, fid, part, v) =>
+  `<span class="stepper"><button type="button" data-hid="${esc(hid)}" data-fid="${esc(fid)}" ${part ? `data-part="${part}"` : ''} data-step="-1" aria-label="meno">−</button><b>${v || 0}</b><button type="button" data-hid="${esc(hid)}" data-fid="${esc(fid)}" ${part ? `data-part="${part}"` : ''} data-step="1" aria-label="più">+</button></span>`;
+
+function fieldsFormHTML(h, k) {
+  return `<div class="fields">${fieldsOf(h).map(f => {
+    const v = fieldVal(k, h, f);
+    let ctrl;
+    if (f.type === 'number') ctrl = stepper(h.id, f.id, null, v);
+    else if (f.type === 'wdl') {
+      const x = v || {};
+      ctrl = `<span class="wdl">${[['w', 'V'], ['d', 'P'], ['l', 'S']].map(([p, l]) => `<span class="wdl-p"><small>${l}</small>${stepper(h.id, f.id, p, x[p])}</span>`).join('')}</span>`;
+    } else if (f.type === 'bool') ctrl = `<button type="button" class="tog ${v ? 'on' : ''}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" data-bool="1">${v ? 'Sì' : 'No'}</button>`;
+    else {
+      const dl = `dl-${esc(h.id)}-${esc(f.id)}`;
+      ctrl = `<input class="fld-text" list="${dl}" data-hid="${esc(h.id)}" data-fid="${esc(f.id)}" value="${esc(v || '')}" placeholder="…"><datalist id="${dl}">${pastValues(h, f).map(o => `<option value="${esc(o)}">`).join('')}</datalist>`;
+    }
+    return `<div class="fld ${f.type}"><span class="fld-l">${esc(f.label)}</span>${ctrl}</div>`;
+  }).join('')}</div>`;
+}
+
+async function updateField(hid, fid, fn) {
+  const entry = getOrCreateDay(state.current);
+  entry.data = { ...(entry.data || {}) };
+  entry.data[hid] = { ...(entry.data[hid] || {}) };
+  entry.data[hid][fid] = fn(entry.data[hid][fid]);
+  await saveDay(entry);
+  renderAll();
+}
+
+// statistiche dei campi: totali, medie, raggruppamenti per testo/sì-no e per mese
+function fieldStatsHTML(h) {
+  const fields = fieldsOf(h);
+  if (!fields.length) return '';
+  const rows = [...state.days.values()].filter(e => e.done?.[h.id]).sort((a, b) => a.date.localeCompare(b.date))
+    .map(e => ({ k: e.date, v: e.data?.[h.id] || {} }));
+  if (!rows.length) return '';
+  const wdl = fields.find(f => f.type === 'wdl');
+  const nums = fields.filter(f => f.type === 'number');
+  const groups = fields.filter(f => f.type === 'text' || f.type === 'bool');
+
+  const agg = list => {
+    const a = { n: list.length, w: 0, d: 0, l: 0, sums: {} };
+    nums.forEach(f => { a.sums[f.id] = 0; });
+    for (const r of list) {
+      if (wdl) { const x = r.v[wdl.id] || {}; a.w += +x.w || 0; a.d += +x.d || 0; a.l += +x.l || 0; }
+      nums.forEach(f => { a.sums[f.id] += +r.v[f.id] || 0; });
+    }
+    a.games = a.w + a.d + a.l;
+    return a;
+  };
+  const all = agg(rows);
+  const per = all.games || all.n;
+  const perLbl = all.games ? 'a partita' : 'a sessione';
+  const winPct = a => a.games ? pct(a.w / a.games) : '–';
+
+  const tiles = [
+    kpi('Sessioni', all.n),
+    ...(wdl ? [kpi(all.games === 1 ? 'Partita' : 'Partite', all.games), kpi('Vittorie', winPct(all))] : []),
+    ...nums.map(f => kpi(esc(f.label), `${all.sums[f.id]}<small class="sub">${fmt2(all.sums[f.id] / per)} ${perLbl}</small>`)),
+  ];
+
+  const head = `<tr><th></th><th>Sess.</th>${wdl ? '<th>V-P-S</th><th>%V</th>' : ''}${nums.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr>`;
+  const line = (label, a) => `<tr><td>${label}</td><td>${a.n}</td>${wdl ? `<td>${a.w}-${a.d}-${a.l}</td><td>${winPct(a)}</td>` : ''}${nums.map(f => `<td>${a.sums[f.id]}</td>`).join('')}</tr>`;
+  const table = (title, map) => `<h3>${title}</h3><div class="tbl-wrap"><table class="tbl">${head}${[...map.entries()].map(([lab, list]) => line(lab, agg(list))).join('')}</table></div>`;
+
+  const groupTables = groups.map(g => {
+    const m = new Map();
+    for (const r of rows) {
+      const raw = r.v[g.id];
+      const key = g.type === 'bool' ? (raw ? 'Sì' : 'No') : (String(raw || '').trim() || '—');
+      if (!m.has(key)) m.set(key, []);
+      m.get(key).push(r);
+    }
+    const sorted = new Map([...m.entries()].sort((a, b) => b[1].length - a[1].length).map(([key, list]) => [esc(key), list]));
+    return table(`Per ${esc(g.label.toLowerCase())}`, sorted);
+  }).join('');
+
+  const months = new Map();
+  for (const r of rows) {
+    const mk = r.k.slice(0, 7);
+    if (!months.has(mk)) months.set(mk, []);
+    months.get(mk).push(r);
+  }
+  const monthMap = new Map([...months.entries()].reverse().map(([mk, list]) =>
+    [keyToDate(mk + '-01').toLocaleDateString('it-IT', { month: 'short', year: '2-digit' }), list]));
+
+  return `<div class="fstats"><div class="kpis inner">${tiles.join('')}</div>
+    ${wdl ? `<p class="muted small">Record: <b>${all.w}</b> vittorie · <b>${all.d}</b> pareggi · <b>${all.l}</b> sconfitte</p>` : ''}
+    ${groupTables}${table('Per mese', monthMap)}</div>`;
+}
+
+const fmt2 = x => (Math.round(x * 100) / 100).toFixed(2).replace('.', ',');
+
 // ---------- componenti ----------
 const kpi = (label, value) => `<div class="kpi"><div class="kpi-v">${value}</div><div class="kpi-l">${label}</div></div>`;
 
@@ -332,7 +440,7 @@ function habitCardHTML(h) {
   return `<div class="card habit-card">
     <div class="hc-head"><span class="hc-icon">${esc(h.icon)}</span><b>${esc(h.name)}</b>
       <span class="muted small">${h.freq === 'daily' ? 'ogni giorno' : `${h.target}× settimana`}</span></div>
-    ${body}</div>`;
+    ${body}${fieldStatsHTML(h)}</div>`;
 }
 
 // ---------- toast ----------
@@ -390,7 +498,7 @@ function renderCheckin() {
       <span class="h-icon">${esc(h.icon)}</span>
       <span class="h-main"><b>${esc(h.name)}</b><span class="h-sub">${sub}</span></span>
       <span class="check">${done ? '✓' : ''}</span>
-    </button>`;
+    </button>${done && fieldsOf(h).length ? fieldsFormHTML(h, k) : ''}`;
   }).join('') || '';
 
   $('#moods').innerHTML = MOODS.map((m, i) => `<button class="mood ${entry?.mood === i + 1 ? 'sel' : ''}" data-mood="${i + 1}" aria-label="Umore ${i + 1}">${m}</button>`).join('');
@@ -512,21 +620,42 @@ function openHabitDialog(h) {
   f.freq.value = h?.freq || 'daily';
   f.target.value = h?.freq === 'weekly' ? h.target : 3;
   $('#target-wrap').hidden = f.freq.value !== 'weekly';
+  editingFields = fieldsOf(h || {}).map(x => ({ ...x }));
+  renderFieldEditor();
   $('#h-delete').hidden = !h;
   $('#h-archive').hidden = !h;
   $('#h-archive').textContent = h?.archived ? 'Ripristina' : 'Archivia';
   $('#habit-dialog').showModal();
 }
 
+function renderFieldEditor() {
+  $('#field-list').innerHTML = editingFields.map((fd, i) => `
+    <div class="fe-row" data-i="${i}">
+      <input class="fe-label" value="${esc(fd.label)}" placeholder="es. Gol" maxlength="24">
+      <select class="fe-type">${Object.entries(FIELD_TYPES).map(([t, l]) => `<option value="${t}" ${t === fd.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button type="button" class="icon-btn" data-rm="${i}" aria-label="Rimuovi campo">×</button>
+    </div>`).join('') || '<p class="muted small">Nessun campo: è una semplice spunta.</p>';
+}
+
+function readFieldEditor() {
+  $$('#field-list .fe-row').forEach(row => {
+    const fd = editingFields[+row.dataset.i];
+    fd.label = $('.fe-label', row).value.trim();
+    fd.type = $('.fe-type', row).value;
+  });
+}
+
 async function submitHabit(e) {
   e.preventDefault();
   const f = e.target;
+  readFieldEditor();
+  const fields = editingFields.filter(x => x.label);
   const freq = f.freq.value;
   const target = freq === 'weekly' ? Math.min(7, Math.max(1, parseInt(f.target.value, 10) || 3)) : 7;
   const existing = state.habits.find(h => h.id === editingHabitId);
   const h = existing
-    ? { ...existing, icon: f.icon.value.trim() || '⭐', name: f.name.value.trim(), freq, target }
-    : { id: uid(), icon: f.icon.value.trim() || '⭐', name: f.name.value.trim(), freq, target,
+    ? { ...existing, icon: f.icon.value.trim() || '⭐', name: f.name.value.trim(), freq, target, fields }
+    : { id: uid(), icon: f.icon.value.trim() || '⭐', name: f.name.value.trim(), freq, target, fields,
         order: Math.max(-1, ...state.habits.map(x => x.order)) + 1, archived: false, createdAt: todayKey() };
   if (!h.name) return;
   await db.put('habits', h);
@@ -602,9 +731,20 @@ async function importData(file) {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'habit-tracker' || !Array.isArray(data.habits) || !Array.isArray(data.days)) throw new Error('Formato non riconosciuto');
-    if (!confirm(`Importare ${data.habits.length} abitudini e ${data.days.length} check-in?\nLe voci con lo stesso id/data verranno sovrascritte.`)) return;
-    await db.putMany('habits', data.habits);
-    await db.putMany('days', data.days);
+    if (!confirm(`Importare ${data.habits.length} abitudini e ${data.days.length} giorni?\nI giorni già presenti vengono uniti, non sovrascritti.`)) return;
+    const habits = data.habits.map(h => ({ ...(state.habits.find(x => x.id === h.id) || {}), ...h }));
+    const days = data.days.map(d => {
+      const ex = state.days.get(d.date);
+      if (!ex) return d;
+      const data2 = { ...(ex.data || {}) };
+      for (const [hid, vals] of Object.entries(d.data || {})) data2[hid] = { ...(data2[hid] || {}), ...vals };
+      const merged = { ...ex, done: { ...(ex.done || {}), ...(d.done || {}) }, data: data2,
+        mood: ex.mood ?? d.mood ?? null, note: [ex.note, d.note].filter(Boolean).join(' · ') };
+      if (ex.partial && d.partial) merged.partial = true; else delete merged.partial;
+      return merged;
+    });
+    await db.putMany('habits', habits);
+    await db.putMany('days', days);
     await load();
     renderAll();
     alert('Import completato.');
@@ -639,7 +779,40 @@ async function init() {
   $('#day-prev').addEventListener('click', () => goToDay(addDaysKey(state.current, -1)));
   $('#day-next').addEventListener('click', () => goToDay(addDaysKey(state.current, 1)));
   $('#weekstrip').addEventListener('click', e => { const b = e.target.closest('[data-day]'); if (b) goToDay(b.dataset.day); });
-  $('#habit-list').addEventListener('click', e => { const b = e.target.closest('.habit'); if (b) toggleHabit(b.dataset.id); });
+  $('#habit-list').addEventListener('click', e => {
+    const st = e.target.closest('[data-step]');
+    if (st) {
+      const d = +st.dataset.step, part = st.dataset.part;
+      updateField(st.dataset.hid, st.dataset.fid, v => {
+        if (!part) return Math.max(0, (+v || 0) + d);
+        const x = { w: 0, d: 0, l: 0, ...(v || {}) };
+        x[part] = Math.max(0, (+x[part] || 0) + d);
+        return x;
+      });
+      return;
+    }
+    const tg = e.target.closest('[data-bool]');
+    if (tg) { updateField(tg.dataset.hid, tg.dataset.fid, v => !v); return; }
+    const b = e.target.closest('.habit');
+    if (b) toggleHabit(b.dataset.id);
+  });
+  $('#habit-list').addEventListener('change', e => {
+    const t = e.target.closest('.fld-text');
+    if (t) updateField(t.dataset.hid, t.dataset.fid, () => t.value.trim());
+  });
+  $('#btn-add-field').addEventListener('click', () => {
+    readFieldEditor();
+    editingFields.push({ id: uid().slice(0, 8), label: '', type: 'number' });
+    renderFieldEditor();
+    $$('#field-list .fe-label').at(-1)?.focus();
+  });
+  $('#field-list').addEventListener('click', e => {
+    const rm = e.target.closest('[data-rm]');
+    if (!rm) return;
+    readFieldEditor();
+    editingFields.splice(+rm.dataset.rm, 1);
+    renderFieldEditor();
+  });
   $('#moods').addEventListener('click', e => { const b = e.target.closest('[data-mood]'); if (b) setMood(+b.dataset.mood); });
   $('#day-note').addEventListener('input', noteChanged);
   $('#save-status').addEventListener('click', async e => {

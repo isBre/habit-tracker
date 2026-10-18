@@ -222,3 +222,43 @@ dialog h2 { margin: 0 0 14px; font-size: 20px; }
 }
 #toast { opacity: 0; }
 #toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+/* campi personalizzati: check-in */
+.fields { background: var(--card); border-radius: var(--radius); margin-top: -4px; padding: 6px 14px 10px; display: grid; gap: 2px; }
+.fld { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.fld:first-child { border-top: 0; }
+.fld-l { font-size: 14px; color: var(--muted); }
+.fld.wdl { flex-wrap: wrap; }
+.stepper { display: inline-flex; align-items: center; gap: 6px; }
+.stepper button { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--card2); color: var(--text); font-size: 20px; line-height: 1; }
+.stepper b { min-width: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+.wdl { display: flex; gap: 10px; flex-wrap: wrap; }
+.wdl-p { display: inline-flex; align-items: center; gap: 4px; }
+.wdl-p small { font-weight: 700; color: var(--muted); }
+.tog { border: 0; border-radius: 10px; padding: 7px 16px; background: var(--card2); color: var(--text); font-weight: 600; }
+.tog.on { background: var(--accent); color: var(--accent-ink); }
+.fld-text { max-width: 60%; padding: 8px 10px; }
+
+/* campi personalizzati: editor */
+.fe-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.fe-row input { flex: 1; min-width: 0; padding: 9px 10px; }
+.fe-row select { width: 130px; flex: none; background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 9px 6px; font-size: 15px; color: var(--text); }
+#field-list { margin-bottom: 8px; }
+
+/* campi personalizzati: statistiche */
+.fstats { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.fstats h3 { font-size: 14px; margin: 14px 0 6px; }
+.kpis.inner { margin-bottom: 8px; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); }
+.kpis.inner .kpi { background: var(--card2); }
+.kpi-v small.sub { display: block; font-size: 11px; margin-top: 2px; }
+.tbl-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.tbl th { text-align: right; font-weight: 600; color: var(--muted); padding: 4px 6px; white-space: nowrap; }
+.tbl td { text-align: right; padding: 6px; border-top: 1px solid var(--line); white-space: nowrap; }
+.tbl th:first-child, .tbl td:first-child { text-align: left; white-space: normal; }
+.fld.wdl { flex-direction: column; align-items: stretch; gap: 6px; }
+.wdl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.wdl-p { flex-direction: column; gap: 2px; }
+.wdl-p .stepper button { width: 30px; height: 30px; font-size: 18px; }
+.tbl td:first-child { min-width: 64px; }
+#habit-form .actions .btn { padding: 11px 12px; }
