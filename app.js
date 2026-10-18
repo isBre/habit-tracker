@@ -1,13 +1,13 @@
 import { db } from './db.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const DAY = 86400000;
 const WD = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
 const WD_LONG = ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
 const MOODS = ['😣', '😕', '😐', '🙂', '😄'];
 const TITLES = { checkin: 'Stasera', stats: 'Progressi', settings: 'Impostazioni' };
 
-const state = { habits: [], days: new Map(), lastExport: null, current: null };
+const state = { habits: [], days: new Map(), lastExport: null, current: null, statsSel: 'all' };
 let editingHabitId = null;
 let editingFields = [];
 let noteTimer = null;
@@ -642,21 +642,105 @@ function renderCheckin() {
     : `<button class="btn" id="btn-confirm" type="button">Non ho fatto niente di questo: registra la giornata</button>`;
 }
 
+// media settimanale (ultime N settimane): punteggio del giorno, oppure una singola abitudine quotidiana
+function weeklyTrend(weeks = 12, h = null) {
+  const cw = weekStartKey(todayKey());
+  const t = todayKey();
+  return [...Array(weeks)].map((_, i) => {
+    const ws = addDaysKey(cw, -7 * (weeks - 1 - i));
+    const vals = [];
+    for (let d = 0; d < 7; d++) {
+      const k = addDaysKey(ws, d);
+      if (k > t) break;
+      if (h) { if (isLogged(k) && k >= habitStart(h)) vals.push(isDone(h, k) ? 1 : 0); }
+      else { const sc = dayScore(k); if (sc != null) vals.push(sc); }
+    }
+    return { ws, v: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null, n: vals.length, cur: i === weeks - 1 };
+  });
+}
+
+function trendSVG(data) {
+  const W = 340, H = 140, L = 30, B = 20, T = 14;
+  const step = (W - L) / data.length, bw = Math.min(18, step * 0.6);
+  const y = v => T + (H - T - B) * (1 - v);
+  let out = [0, 0.5, 1].map(v => `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 6}" y="${y(v) + 3}" class="ax" text-anchor="end">${v * 100}%</text>`).join('');
+  data.forEach((d, i) => {
+    const x = L + step * i + (step - bw) / 2;
+    const lbl = keyToDate(d.ws);
+    if (d.v != null) {
+      const hgt = Math.max(2, (H - T - B) * d.v);
+      out += `<path d="${roundTop(x, y(d.v), bw, hgt, 4)}" class="tb ${d.cur ? 'cur' : ''}"/>`;
+      if (i === data.length - 1 || i === data.length - 2 || d.v === 1) out += `<text x="${x + bw / 2}" y="${y(d.v) - 4}" class="ax" text-anchor="middle">${Math.round(d.v * 100)}</text>`;
+    }
+    if (i % 2 === (data.length - 1) % 2) out += `<text x="${x + bw / 2}" y="${H - 6}" class="ax" text-anchor="middle">${lbl.getDate()}/${lbl.getMonth() + 1}</text>`;
+    out += `<rect x="${L + step * i}" y="${T}" width="${step}" height="${H - T - B}" class="hit" data-tip="Settimana del ${lbl.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}: ${d.v == null ? 'nessun check-in' : `${pct(d.v)} su ${d.n} sere`}"/>`;
+  });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Andamento settimanale">${out}</svg>`;
+}
+
+function statsSelectorHTML(habits, sel) {
+  return `<div class="selector">
+    <button class="chip ${sel === 'all' ? 'sel' : ''}" data-sel="all">📊 Panoramica</button>
+    ${habits.map(h => `<button class="chip ${sel === h.id ? 'sel' : ''}" data-sel="${esc(h.id)}">${esc(h.icon)} ${esc(h.name)}</button>`).join('')}
+  </div>`;
+}
+
 function renderStats() {
   const el = $('#stats');
   const habits = activeHabits();
   if (!habits.length) { el.innerHTML = `<div class="card empty">Nessuna abitudine attiva.</div>`; return; }
-  const a7 = avgScore(7);
-  el.innerHTML = `
-    <div class="kpis">
-      ${kpi('Check-in di fila', `${checkinStreak()}`)}
-      ${kpi('Ultimi 7 gg', a7 == null ? '–' : pct(a7))}
-      ${kpi('Giornate perfette', `${perfectDays(30)}<small>/30</small>`)}
-    </div>
-    <div class="card"><h2>Cosa puoi migliorare</h2><ul class="insights">${insights().map(i => `<li>${i}</li>`).join('')}</ul></div>
-    <div class="card"><h2>Costanza · 16 settimane</h2>${heatmapHTML()}
-      <p class="muted tiny">Colore = quota di abitudini quotidiane fatte. Tocca un giorno per aprirlo.</p></div>
-    ${habits.map(habitCardHTML).join('')}`;
+  if (state.statsSel !== 'all' && !habits.some(h => h.id === state.statsSel)) state.statsSel = 'all';
+  const sel = state.statsSel;
+  const scrollX = $('.selector', el)?.scrollLeft || 0;
+
+  let body;
+  if (sel === 'all') {
+    const a7 = avgScore(7), a30 = avgScore(30);
+    const ranked = habits.map(h => ({ h, r: habitRate(h) }))
+      .sort((a, b) => (b.r?.rate ?? -1) - (a.r?.rate ?? -1));
+    body = `
+      <div class="kpis">
+        ${kpi('Check-in di fila', `${checkinStreak()}`)}
+        ${kpi('Ultimi 7 gg', a7 == null ? '–' : pct(a7))}
+        ${kpi('Giornate perfette', `${perfectDays(30)}<small>/30</small>`)}
+      </div>
+      <div class="card charts"><h2>Andamento · 12 settimane</h2>
+        ${trendSVG(weeklyTrend(12))}
+        <p class="muted tiny">Quota media di abitudini quotidiane fatte, per settimana${a30 != null ? ` · media 30 gg ${pct(a30)}` : ''}.</p>
+        <p class="chart-tip muted small">Tocca una barra per i dettagli.</p></div>
+      <div class="card"><h2>Tutte le abitudini</h2>
+        <div class="overview">${ranked.map(({ h, r }) => {
+          const streak = h.freq === 'daily' ? `🔥 ${dailyStreak(h)} gg` : `🔥 ${weeklyStreak(h)} sett.`;
+          let trend = '';
+          if (h.freq === 'daily') {
+            const a = dailyRateBetween(h, 0, 13), b = dailyRateBetween(h, 14, 27);
+            if (a != null && b != null) trend = a - b >= 0.1 ? '<span class="up">▲</span>' : b - a >= 0.1 ? '<span class="down">▼</span>' : '';
+          }
+          const v = r?.rate;
+          return `<button class="ov-row" data-sel="${esc(h.id)}">
+            <span class="ov-icon">${esc(h.icon)}</span>
+            <span class="ov-main"><span class="ov-top"><b>${esc(h.name)}</b><span class="ov-v">${v == null ? '–' : pct(v)} ${trend}</span></span>
+              <span class="ov-track"><span class="ov-fill ${v != null && v < 0.5 ? 'low' : ''}" style="width:${(v ?? 0) * 100}%"></span></span>
+              <span class="ov-sub">${h.freq === 'daily' ? 'giorni, ultimi 30' : `settimane centrate (${h.target}×)`} · ${streak}</span></span>
+            <span class="ov-go">›</span>
+          </button>`;
+        }).join('')}</div>
+        <p class="muted tiny">Tocca un'abitudine per vederne statistiche e grafici.</p></div>
+      <div class="card"><h2>Cosa puoi migliorare</h2><ul class="insights">${insights().map(i => `<li>${i}</li>`).join('')}</ul></div>
+      <div class="card"><h2>Costanza · 16 settimane</h2>${heatmapHTML()}
+        <p class="muted tiny">Colore = quota di abitudini quotidiane fatte. Tocca un giorno per aprirlo.</p></div>`;
+  } else {
+    const h = habits.find(x => x.id === sel);
+    const mine = insights().filter(i => i.includes(esc(h.name)));
+    body = `${habitCardHTML(h)}
+      ${h.freq === 'daily' ? `<div class="card charts"><h2>Andamento · 12 settimane</h2>${trendSVG(weeklyTrend(12, h))}
+        <p class="muted tiny">Percentuale di sere con la spunta, per settimana.</p><p class="chart-tip muted small">Tocca una barra per i dettagli.</p></div>` : ''}
+      ${mine.length ? `<div class="card"><h2>Consigli</h2><ul class="insights">${mine.map(i => `<li>${i}</li>`).join('')}</ul></div>` : ''}`;
+  }
+  el.innerHTML = statsSelectorHTML(habits, sel) + body;
+  const selEl = $('.selector', el);
+  selEl.scrollLeft = scrollX;
+  $('.chip.sel', selEl)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderSettings() {
@@ -961,6 +1045,13 @@ async function init() {
     if (e.target.id === 'btn-confirm') { await saveDay(getOrCreateDay(state.current)); renderAll(); }
   });
   $('#stats').addEventListener('click', e => {
+    const pick = e.target.closest('[data-sel]');
+    if (pick) {
+      state.statsSel = pick.dataset.sel;
+      renderStats();
+      window.scrollTo({ top: 0 });
+      return;
+    }
     const tip = e.target.closest('[data-tip]');
     if (tip) {
       const box = tip.closest('.charts')?.querySelector('.chart-tip');
