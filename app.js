@@ -1,6 +1,6 @@
 import { db } from './db.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const DAY = 86400000;
 const WD = ['L', 'M', 'M', 'G', 'V', 'S', 'D'];
 const WD_LONG = ['lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato', 'domenica'];
@@ -678,17 +678,179 @@ function trendSVG(data) {
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Andamento settimanale">${out}</svg>`;
 }
 
+// ---------- umore ----------
+const MOOD_LBL = ['Pessima', 'Così così', 'Normale', 'Buona', 'Ottima'];
+const moodEmoji = v => MOODS[Math.min(4, Math.max(0, Math.round(v) - 1))];
+const fmtMood = v => v == null ? '–' : fmt1(v);
+
+function moodList(days) {
+  const out = [], t = todayKey();
+  for (let i = 0; i < days; i++) {
+    const k = addDaysKey(t, -i);
+    const m = state.days.get(k)?.mood;
+    if (m) out.push({ k, m });
+  }
+  return out;
+}
+const avgOf = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+const moodAvg = days => avgOf(moodList(days).map(x => x.m));
+const allMoods = () => [...state.days.values()].filter(e => e.mood).map(e => ({ k: e.date, m: e.mood }));
+
+function moodWeeks(weeks = 12) {
+  const cw = weekStartKey(todayKey());
+  return [...Array(weeks)].map((_, i) => {
+    const ws = addDaysKey(cw, -7 * (weeks - 1 - i));
+    const ms = [];
+    for (let d = 0; d < 7; d++) { const m = state.days.get(addDaysKey(ws, d))?.mood; if (m) ms.push(m); }
+    return { ws, v: avgOf(ms), n: ms.length, cur: i === weeks - 1 };
+  });
+}
+
+// umore medio nei giorni con / senza ciascuna abitudine (servono almeno 3 giorni per lato)
+function moodByHabit() {
+  return activeHabits().map(h => {
+    const yes = [], no = [];
+    for (const e of state.days.values()) {
+      if (!e.mood || e.date < habitStart(h) || e.partial) continue;
+      (e.done?.[h.id] ? yes : no).push(e.mood);
+    }
+    return { h, yes: avgOf(yes), no: avgOf(no), ny: yes.length, nn: no.length };
+  }).filter(x => x.ny >= 3 && x.nn >= 3).map(x => ({ ...x, d: x.yes - x.no })).sort((a, b) => b.d - a.d);
+}
+
+function moodStripHTML(days = 28, clickable = true) {
+  const t = todayKey();
+  let cells = '';
+  for (let i = days - 1; i >= 0; i--) {
+    const k = addDaysKey(t, -i);
+    const m = state.days.get(k)?.mood;
+    cells += clickable
+      ? `<button class="ms m${m || 0}" data-day="${k}" title="${k}${m ? ': ' + MOOD_LBL[m - 1] : ''}"></button>`
+      : `<span class="ms m${m || 0}"></span>`;
+  }
+  return `<div class="mstrip">${cells}</div>`;
+}
+
+function moodLegendHTML() {
+  return `<div class="legend">${MOODS.map((e, i) => `<span><i class="sw m${i + 1}"></i>${e}</span>`).join('')}<span><i class="sw m0"></i>non registrato</span></div>`;
+}
+
+// linea dell'umore medio settimanale, asse 1–5 con emoji
+function moodLineSVG(data) {
+  const W = 340, H = 150, L = 30, R = 10, B = 20, T = 12;
+  const step = (W - L - R) / (data.length - 1 || 1);
+  const x = i => L + step * i;
+  const y = v => T + (H - T - B) * (1 - (v - 1) / 4);
+  let out = [1, 3, 5].map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 8}" y="${y(v) + 5}" class="ax emo" text-anchor="end">${MOODS[v - 1]}</text>`).join('');
+  let seg = [];
+  const segs = [];
+  data.forEach((d, i) => { if (d.v != null) seg.push(`${x(i)},${y(d.v)}`); else if (seg.length) { segs.push(seg); seg = []; } });
+  if (seg.length) segs.push(seg);
+  segs.forEach(sg => { out += sg.length > 1 ? `<polyline points="${sg.join(' ')}" class="ln s1"/>` : ''; });
+  data.forEach((d, i) => {
+    const lbl = keyToDate(d.ws);
+    if (d.v != null) out += `<circle cx="${x(i)}" cy="${y(d.v)}" r="${d.cur ? 4.5 : 3.5}" class="pt s1"/>`;
+    if (i % 2 === (data.length - 1) % 2) out += `<text x="${x(i)}" y="${H - 6}" class="ax" text-anchor="middle">${lbl.getDate()}/${lbl.getMonth() + 1}</text>`;
+    out += `<rect x="${x(i) - step / 2}" y="${T}" width="${step}" height="${H - T - B}" class="hit" data-tip="Settimana del ${lbl.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}: ${d.v == null ? 'nessun umore registrato' : `umore medio ${fmt1(d.v)} ${moodEmoji(d.v)} su ${d.n} sere`}"/>`;
+  });
+  const last = [...data].reverse().find(d => d.v != null);
+  if (last) out += `<text x="${x(data.lastIndexOf(last))}" y="${y(last.v) - 9}" class="end" text-anchor="middle">${fmt1(last.v)}</text>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Umore medio per settimana">${out}</svg>`;
+}
+
+function moodOverviewCard() {
+  const a7 = moodAvg(7), a30 = moodAvg(30), n30 = moodList(30).length;
+  if (!allMoods().length) return `<div class="card"><h2>Umore</h2><p class="muted small">Scegli un'emoji nel check-in serale: qui vedrai come va e cosa lo influenza.</p></div>`;
+  return `<div class="card mood-ov" data-sel="mood" role="button" tabindex="0">
+    <div class="mo-head"><h2>Umore</h2><span class="ov-go">›</span></div>
+    <div class="mo-row">
+      <div class="mo-big">${a7 != null ? moodEmoji(a7) : '·'}<span><b>${fmtMood(a7)}</b><small>ultimi 7 gg</small></span></div>
+      <div class="mo-big sm"><span><b>${fmtMood(a30)}</b><small>ultimi 30 gg · ${n30} sere</small></span></div>
+    </div>
+    ${moodStripHTML(28, false)}
+    <p class="muted tiny">Ultimi 28 giorni · tocca per i dettagli</p></div>`;
+}
+
+function moodPageHTML() {
+  const all = allMoods();
+  if (!all.length) return `<div class="card empty">Nessun umore registrato ancora.<br>Sceglilo nel check-in serale con le emoji.</div>`;
+  const a7 = moodAvg(7), a30 = moodAvg(30), aAll = avgOf(all.map(x => x.m));
+  const prev = avgOf(moodList(60).filter(x => x.k < addDaysKey(todayKey(), -29)).map(x => x.m));
+  const trend = a30 != null && prev != null ? (a30 - prev >= 0.2 ? `<span class="up">▲</span>` : prev - a30 >= 0.2 ? `<span class="down">▼</span>` : '') : '';
+
+  // distribuzione
+  const counts = [0, 0, 0, 0, 0];
+  all.forEach(x => counts[x.m - 1]++);
+  const maxC = Math.max(...counts, 1);
+  const dist = counts.map((c, i) => ({ i, c })).reverse().map(({ i, c }) => `
+    <div class="dist-row"><span class="dist-e">${MOODS[i]}</span><span class="dist-l">${MOOD_LBL[i]}</span>
+      <span class="hb-t"><span class="hb-f m${i + 1}" style="width:${c / maxC * 100}%"></span></span>
+      <span class="dist-v">${c}<small> · ${pct(c / all.length)}</small></span></div>`).join('');
+
+  // giorno della settimana
+  const wd = WD.map(() => []);
+  all.forEach(x => wd[wdIndex(keyToDate(x.k))].push(x.m));
+  const wdHTML = wd.map((arr, i) => {
+    const v = avgOf(arr);
+    return `<div class="wd-c"><span class="wdm m${v == null ? 0 : Math.round(v)}">${v == null ? '–' : fmt1(v)}</span><small>${WD[i]}</small></div>`;
+  }).join('');
+  const wdVals = wd.map((a, i) => ({ i, v: avgOf(a), n: a.length })).filter(x => x.n >= 2);
+  let wdNote = '';
+  if (wdVals.length >= 4) {
+    const best = [...wdVals].sort((a, b) => b.v - a.v)[0], worst = [...wdVals].sort((a, b) => a.v - b.v)[0];
+    if (best.v - worst.v >= 0.4) wdNote = `<p class="small">Giorno migliore: <b>${WD_LONG[best.i]}</b> (${fmt1(best.v)}) · peggiore: <b>${WD_LONG[worst.i]}</b> (${fmt1(worst.v)}).</p>`;
+  }
+
+  // abitudini e umore
+  const mh = moodByHabit();
+  const maxD = Math.max(0.5, ...mh.map(x => Math.abs(x.d)));
+  const habHTML = mh.length ? `<div class="mh">${mh.map(x => {
+    const w = Math.abs(x.d) / maxD * 50;
+    return `<div class="mh-row">
+      <span class="mh-n">${esc(x.h.icon)} ${esc(x.h.name)}</span>
+      <span class="mh-bar"><span class="mh-mid"></span><span class="mh-f ${x.d >= 0 ? 'pos' : 'neg'}" style="${x.d >= 0 ? `left:50%` : `right:50%`};width:${w}%"></span></span>
+      <span class="mh-v ${x.d >= 0.3 ? 'up' : x.d <= -0.3 ? 'down' : ''}">${x.d >= 0 ? '+' : '−'}${fmt1(Math.abs(x.d))}</span>
+      <span class="mh-sub">con ${fmt1(x.yes)} · senza ${fmt1(x.no)} <span class="muted">(${x.ny} / ${x.nn} sere)</span></span>
+    </div>`;
+  }).join('')}</div>
+    <p class="muted tiny">Differenza di umore medio tra le sere in cui hai fatto l'abitudine e quelle in cui no. È una correlazione, non per forza una causa.</p>`
+    : `<p class="muted small">Servono almeno 3 sere con e 3 senza ciascuna abitudine (con l'umore registrato) per confrontarle.</p>`;
+
+  const top = mh.filter(x => x.d >= 0.3).slice(0, 2);
+  const tips = [];
+  if (top.length) tips.push(`Le sere in cui stai meglio sono quelle con ${top.map(x => `<b>${esc(x.h.icon)} ${esc(x.h.name)}</b> (+${fmt1(x.d)})`).join(' e ')}.`);
+  const low = mh.filter(x => x.d <= -0.3);
+  if (low.length) tips.push(`Curioso: con ${low.map(x => `<b>${esc(x.h.icon)} ${esc(x.h.name)}</b>`).join(', ')} l'umore tende a essere più basso.`);
+  let lowRun = 0;
+  for (const x of moodList(7)) { if (x.m <= 2) lowRun++; else break; }
+  if (lowRun >= 3) tips.push(`Ultime ${lowRun} sere sotto la media: magari punta su un'abitudine che ti fa stare bene, anche piccola.`);
+
+  return `
+    <div class="kpis">
+      ${kpi('Ultimi 7 gg', `${a7 != null ? moodEmoji(a7) + ' ' : ''}${fmtMood(a7)}`)}
+      ${kpi('Ultimi 30 gg', `${fmtMood(a30)} ${trend}`)}
+      ${kpi('Media totale', `${fmtMood(aAll)}<small class="sub">${all.length} sere</small>`)}
+    </div>
+    ${tips.length ? `<div class="card"><h2>In breve</h2><ul class="insights">${tips.map(t => `<li>${t}</li>`).join('')}</ul></div>` : ''}
+    <div class="card charts"><h2>Andamento · 12 settimane</h2>${moodLineSVG(moodWeeks(12))}
+      <p class="muted tiny">Umore medio per settimana (1 = ${MOODS[0]}, 5 = ${MOODS[4]}).</p><p class="chart-tip muted small">Tocca un punto per i dettagli.</p></div>
+    <div class="card"><h2>Ultime 8 settimane</h2>${moodStripHTML(56)}${moodLegendHTML()}<p class="muted tiny">Tocca un giorno per aprirlo.</p></div>
+    <div class="card"><h2>Abitudini e umore</h2>${habHTML}</div>
+    <div class="card"><h2>Distribuzione</h2><div class="dist">${dist}</div></div>
+    <div class="card"><h2>Per giorno della settimana</h2><div class="wd">${wdHTML}</div>${wdNote}</div>`;
+}
+
 function statsSelectorHTML(habits, sel) {
   const tile = (id, icon, label) => `<button class="tile ${sel === id ? 'sel' : ''}" data-sel="${esc(id)}" aria-pressed="${sel === id}">
     <span class="t-ico">${icon}</span><span class="t-lbl">${label}</span></button>`;
-  return `<div class="selector">${tile('all', '📊', 'Panoramica')}${habits.map(h => tile(h.id, esc(h.icon), esc(h.name))).join('')}</div>`;
+  return `<div class="selector">${tile('all', '📊', 'Panoramica')}${tile('mood', '🙂', 'Umore')}${habits.map(h => tile(h.id, esc(h.icon), esc(h.name))).join('')}</div>`;
 }
 
 function renderStats() {
   const el = $('#stats');
   const habits = activeHabits();
   if (!habits.length) { el.innerHTML = `<div class="card empty">Nessuna abitudine attiva.</div>`; return; }
-  if (state.statsSel !== 'all' && !habits.some(h => h.id === state.statsSel)) state.statsSel = 'all';
+  if (!['all', 'mood'].includes(state.statsSel) && !habits.some(h => h.id === state.statsSel)) state.statsSel = 'all';
   const sel = state.statsSel;
   const scrollX = $('.selector', el)?.scrollLeft || 0;
 
@@ -707,6 +869,7 @@ function renderStats() {
         ${trendSVG(weeklyTrend(12))}
         <p class="muted tiny">Quota media di abitudini quotidiane fatte, per settimana${a30 != null ? ` · media 30 gg ${pct(a30)}` : ''}.</p>
         <p class="chart-tip muted small">Tocca una barra per i dettagli.</p></div>
+      ${moodOverviewCard()}
       <div class="card"><h2>Tutte le abitudini</h2>
         <div class="overview">${ranked.map(({ h, r }) => {
           const streak = h.freq === 'daily' ? `🔥 ${dailyStreak(h)} gg` : `🔥 ${weeklyStreak(h)} sett.`;
@@ -728,6 +891,8 @@ function renderStats() {
       <div class="card"><h2>Cosa puoi migliorare</h2><ul class="insights">${insights().map(i => `<li>${i}</li>`).join('')}</ul></div>
       <div class="card"><h2>Costanza · 16 settimane</h2>${heatmapHTML()}
         <p class="muted tiny">Colore = quota di abitudini quotidiane fatte. Tocca un giorno per aprirlo.</p></div>`;
+  } else if (sel === 'mood') {
+    body = moodPageHTML();
   } else {
     const h = habits.find(x => x.id === sel);
     const mine = insights().filter(i => i.includes(esc(h.name)));
